@@ -1,0 +1,116 @@
+{% comment %}
+  Back-in-stock "Notify me" button.
+
+  Renders only while the selected variant is unavailable. Clicking it posts to
+  the /api/notify serverless endpoint, which adds the tag `bis-<product-handle>`
+  to the customer in Shopify. The email team segments on that tag when the
+  product is restocked.
+
+  Usage (inside the product form, near the Add to cart button):
+    {% render 'bis-notify-button', product: product, api_base: 'https://pro-clad-bis.vercel.app' %}
+
+  Accepts:
+    product  - product object (required)
+    api_base - origin of the deployed notify API (required)
+{% endcomment %}
+
+<bis-notify
+  class="bis-notify"
+  data-api-base="{{ api_base }}"
+  data-product-handle="{{ product.handle }}"
+  data-available="{{ product.selected_or_first_available_variant.available }}"
+  {% if customer %}
+    data-customer-id="{{ customer.id }}"
+    data-customer-email="{{ customer.email }}"
+  {% endif %}
+  hidden
+>
+  <form class="bis-notify__form" novalidate>
+    <label class="bis-notify__label" for="bis-notify-email-{{ product.id }}">
+      {{ 'products.product.notify_email_label' | t: default: 'Email me when available' }}
+    </label>
+    <input
+      id="bis-notify-email-{{ product.id }}"
+      class="bis-notify__input"
+      type="email"
+      name="email"
+      autocomplete="email"
+      inputmode="email"
+      placeholder="you@example.com"
+      {% if customer %}value="{{ customer.email }}" required{% else %}required{% endif %}
+    >
+    <button class="bis-notify__submit" type="submit">
+      {{ 'products.product.notify_me' | t: default: 'Notify me' }}
+    </button>
+    <p class="bis-notify__status" role="status" aria-live="polite"></p>
+  </form>
+</bis-notify>
+
+{% stylesheet %}
+  .bis-notify {
+    display: block;
+    margin-block-start: 1.2rem;
+  }
+
+  .bis-notify[hidden] {
+    display: none;
+  }
+
+  .bis-notify__form {
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .bis-notify__label {
+    font-size: 1.4rem;
+  }
+
+  .bis-notify__input,
+  .bis-notify__submit {
+    min-height: 4.4rem;
+    padding-inline: 1.6rem;
+    font: inherit;
+  }
+
+  .bis-notify__input {
+    border: 1px solid rgba(var(--color-foreground, 0 0 0), 0.3);
+    border-radius: 0.4rem;
+    background: transparent;
+    color: inherit;
+  }
+
+  .bis-notify__submit {
+    border: 0;
+    border-radius: 0.4rem;
+    background: rgb(var(--color-button, 18 18 18));
+    color: rgb(var(--color-button-text, 255 255 255));
+    cursor: pointer;
+  }
+
+  .bis-notify__submit[disabled] {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .bis-notify__status:empty {
+    display: none;
+  }
+
+  .bis-notify__status[data-state='error'] {
+    color: rgb(var(--color-error, 200 40 40));
+  }
+
+  @media screen and (min-width: 750px) {
+    .bis-notify__form {
+      grid-template-columns: 1fr auto;
+      align-items: center;
+    }
+
+    .bis-notify__label,
+    .bis-notify__status {
+      grid-column: 1 / -1;
+    }
+  }
+{% endstylesheet %}
+
+<script src="{{ 'bis-notify.js' | asset_url }}" defer></script>

@@ -48,24 +48,65 @@ async function probeAdminApi() {
   }
 }
 
+const DEFAULT_ORIGINS = [
+  "https://sov2-dev.myshopify.com",
+];
+
+function allowedOriginList() {
+  const parsed = String(process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  // Mirrors notify.js: the hardcoded list always applies, env only adds.
+  const defaults = DEFAULT_ORIGINS.map((o) => o.replace(/\/$/, ""));
+  return [...new Set([...defaults, ...parsed])];
+}
+
+/** @returns {boolean} whether the request origin is permitted. */
+function applyCors(req, res) {
+  const origin = String(req.headers.origin || "").replace(/\/$/, "");
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
+
+  // Server-to-server calls (curl, uptime checks) send no Origin.
+  if (!origin) return true;
+
+  if (allowedOriginList().includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    return true;
+  }
+  console.warn("[bis-health] blocked origin", origin);
+  return false;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
+  const originAllowed = applyCors(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.status(originAllowed ? 204 : 403).end();
+    return;
+  }
   if (req.method !== "GET" && req.method !== "HEAD") {
-    res.setHeader("Allow", "GET, HEAD");
+    res.setHeader("Allow", "GET, HEAD, OPTIONS");
     res.status(405).json({ ok: false, error: "Method not allowed" });
+    return;
+  }
+  if (!originAllowed) {
+    res.status(403).json({ ok: false, error: "Origin not allowed" });
     return;
   }
 
   const storeDomain = process.env.SHOPIFY_STORE_DOMAIN || null;
-  const allowedOrigins = String(process.env.ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const allowedOrigins = allowedOriginList();
 
   const body = {
     ok: true,
-    service: "one8-back-in-stock",
+    service: "sov2-back-in-stock",
     apiVersion: API_VERSION,
     storeDomain,
     // Never echo the token itself — just whether it is present and plausible.
@@ -73,9 +114,7 @@ export default async function handler(req, res) {
     adminTokenLooksValid: /^shp(at|ca)_[a-f0-9]{32}$/i.test(
       process.env.SHOPIFY_ADMIN_TOKEN || "",
     ),
-    allowedOrigins: allowedOrigins.length
-      ? allowedOrigins
-      : ["https://one8.com", "https://www.one8.com (default)"],
+    allowedOrigins,
   };
 
   if (!storeDomain || !body.adminTokenConfigured) {

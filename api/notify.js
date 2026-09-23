@@ -6,6 +6,8 @@
  *   { customerId: "24789358182560", phone?: "+919812345678", productHandle: "seam-xviii-signature-mens" }
  *   or
  *   { email: "someone@example.com", phone?: "+919812345678", productHandle: "seam-xviii-signature-mens" }
+ *   or, for a generic (non-product) signup — productHandle omitted:
+ *   { email: "someone@example.com" }
  *
  * GET /api/notify?productHandle=<handle>&phone=%2B919812345678
  *   Answers { ok, tag, subscribed } — whether that shopper already holds the
@@ -14,14 +16,16 @@
  *   check, since an unknown handle correctly answers subscribed: false.
  *
  * What POST does:
- *   1. Validates the product handle and confirms the product exists.
+ *   1. If productHandle is given, validates it and confirms the product exists.
  *   2. Resolves the customer: by Shopify customer ID (KwikPass logged-in flow),
  *      by email, or by phone (guest flow; the customer is created if not found).
- *   3. Adds the tag `bis-<product-handle>` to that customer via the Admin API.
+ *   3. Adds a tag to that customer via the Admin API: `bis-<product-handle>`
+ *      when productHandle was given, otherwise the generic `bis-notify` tag.
  *
  * The backend/email team keys their automations off that tag. When a product
  * is restocked they segment customers with tag `bis-<handle>`, send the email,
- * then remove the tag so customers are not notified twice.
+ * then remove the tag so customers are not notified twice. `bis-notify` is a
+ * plain "notify me" signup with no product tie.
  *
  * Env vars (Vercel project settings):
  *   SHOPIFY_STORE_DOMAIN  e.g. 6qx7kf-as.myshopify.com
@@ -36,11 +40,19 @@
 
 const API_VERSION = "2025-07";
 const TAG_PREFIX = "bis-";
+// Tag applied when the shopper subscribes with only an email/phone/customerId
+// and no productHandle — a generic "notify me" signup, not tied to a product.
+const GENERIC_TAG = "bis-notify";
 const HANDLE_RE = /^[a-z0-9][a-z0-9-_]{0,120}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const E164_RE = /^\+[1-9]\d{7,14}$/;
 
-const DEFAULT_ORIGINS = ["https://one8.com", "https://www.one8.com"];
+const DEFAULT_ORIGINS = [
+  "https://sov2-dev.myshopify.com",
+  "https://proclad-smcyw63f.myshopify.com",
+  "https://pro-clad.com",
+  "https://www.pro-clad.com",
+];
 
 // One Admin API call may not exceed this...
 const REQUEST_TIMEOUT_MS = 4000;
@@ -98,7 +110,10 @@ function allowedOrigins() {
     .split(",")
     .map((o) => o.trim().replace(/\/$/, ""))
     .filter(Boolean);
-  return parsed.length ? parsed : DEFAULT_ORIGINS;
+  // The hardcoded list is always honoured; ALLOWED_ORIGINS only adds to it,
+  // so a misconfigured env var can never lock the storefront out.
+  const defaults = DEFAULT_ORIGINS.map((o) => o.replace(/\/$/, ""));
+  return [...new Set([...defaults, ...parsed])];
 }
 
 /** @returns {boolean} whether the request origin is permitted. */
@@ -117,6 +132,9 @@ function applyCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     return true;
   }
+  // A blocked origin surfaces in the browser only as an opaque "CORS error",
+  // so name it in the logs — that is the one place the real caller shows up.
+  console.warn("[bis-notify] blocked origin", origin, "allowed:", allowedOrigins().join(","));
   return false;
 }
 
@@ -454,7 +472,11 @@ function parseInput(body) {
   // Strip spaces, dashes and brackets so "+91 98123-45678" normalises cleanly.
   const phone = rawPhone.trim().replace(/[\s()\-.]/g, "");
 
-  if (!HANDLE_RE.test(productHandle)) throw new BadRequest("Invalid product handle");
+  // productHandle is optional: a bare email/phone/customerId signup gets the
+  // generic GENERIC_TAG instead of a product-tied bis-<handle> tag.
+  if (productHandle && !HANDLE_RE.test(productHandle)) {
+    throw new BadRequest("Invalid product handle");
+  }
   if (!customerId && !email && !phone) {
     throw new BadRequest("customerId, email or phone is required");
   }
@@ -464,7 +486,7 @@ function parseInput(body) {
     throw new BadRequest("Invalid phone, expected E.164 format e.g. +919812345678");
   }
 
-  const tag = `${TAG_PREFIX}${productHandle}`;
+  const tag = productHandle ? `${TAG_PREFIX}${productHandle}` : GENERIC_TAG;
   if (tag.length > SHOPIFY_TAG_MAX) throw new BadRequest("Product handle too long");
 
   return { productHandle, customerId, email, phone, tag };
@@ -526,7 +548,8 @@ export default async function handler(req, res) {
     const { productHandle, customerId, email, phone, tag } = parseInput(body);
 
     // 1. Confirm the product exists so junk handles never become tags.
-    await assertProductExists(productHandle, ctx);
+    //    Skipped when no productHandle was sent (generic email-only signup).
+    if (productHandle) await assertProductExists(productHandle, ctx);
 
     // 2. Resolve (or create) the customer.
     const customer = await resolveCustomer({ customerId, email, phone, tag }, ctx);
